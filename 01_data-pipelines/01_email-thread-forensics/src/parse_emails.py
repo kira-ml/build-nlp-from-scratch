@@ -46,13 +46,24 @@ def load_email_data(data_dir):
         df = pd.read_csv(input_csv, on_bad_lines='skip')
         logging.info(f"Successfully loaded {len(df)} emails from {input_csv}")
         
-        # Validate required columns
-        required_columns = {'id', 'filename', 'raw_text'}
+        # Validate required columns (actual columns from sampling.py)
+        required_columns = {'file', 'message'}
         if not required_columns.issubset(df.columns):
             missing = required_columns - set(df.columns)
             raise ValueError(f"Missing required columns: {missing}")
-            
+        
+        # Add an ID column based on row index for tracking
+        df['id'] = df.index.astype(str)
+        
+        # Rename columns to match expected names in processing functions
+        df = df.rename(columns={
+            'file': 'filename', 
+            'message': 'raw_text'
+        })
+        
+        logging.info(f"Data validation successful. Columns: {list(df.columns)}")
         return df
+        
     except Exception as e:
         logging.error(f"Failed to load or validate CSV: {e}")
         raise
