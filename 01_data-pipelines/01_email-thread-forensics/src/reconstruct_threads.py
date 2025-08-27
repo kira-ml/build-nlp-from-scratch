@@ -20,6 +20,8 @@ Key Features:
 Example:
     >>> # Execute thread reconstruction pipeline
     >>> python reconstruct_threads.py
+
+Author: kira-ml (GitHub, machine learning student)
 """
 
 import os
@@ -35,9 +37,26 @@ from pathlib import Path
 
 
 class EmailThreadReconstructor:
-    """Efficient email thread reconstruction engine with optimized performance"""
+    """Efficient email thread reconstruction engine with optimized performance
+    
+    This class implements a graph-based approach to reconstruct email conversation threads
+    by analyzing message headers and relationships. It supports large-scale processing
+    with memory-efficient data handling and comprehensive quality metrics.
+    
+    Attributes:
+        base_dir (Path): Base project directory path
+        data_dir (Path): Processed data directory path
+        logs_dir (Path): Logging directory path
+        timestamp (str): ISO format timestamp for current run
+        logger (Logger): Configured logging instance
+    """
     
     def __init__(self, base_directory: str):
+        """Initialize the thread reconstructor with base directory
+        
+        Args:
+            base_directory (str): Root directory for project data and logs
+        """
         self.base_dir = Path(base_directory)
         self.data_dir = self.base_dir / "data" / "processed"
         self.logs_dir = self.base_dir / "logs"
@@ -45,7 +64,11 @@ class EmailThreadReconstructor:
         self._setup_logging()
         
     def _setup_logging(self) -> None:
-        """Configure logging for thread reconstruction"""
+        """Configure logging for thread reconstruction
+        
+        Sets up dual logging to file and console with timestamped filenames.
+        Creates logs directory if it doesn't exist.
+        """
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         log_filename = self.logs_dir / f"reconstruct_threads_{self.timestamp}.log"
         
@@ -60,7 +83,22 @@ class EmailThreadReconstructor:
         self.logger = logging.getLogger(__name__)
     
     def load_parsed_emails(self) -> List[Dict[str, Any]]:
-        """Load parsed emails from JSONL file with memory-efficient streaming"""
+        """Load parsed emails from JSONL file with memory-efficient streaming
+        
+        Reads email data line-by-line to handle large datasets without memory issues.
+        Invalid JSON lines are logged and skipped to maintain processing continuity.
+        
+        Returns:
+            List[Dict[str, Any]]: List of parsed email dictionaries
+            
+        Raises:
+            FileNotFoundError: If emails file doesn't exist at expected path
+            Exception: For other file reading or parsing errors
+            
+        Example:
+            >>> emails = reconstructor.load_parsed_emails()
+            >>> print(f"Loaded {len(emails)} emails")
+        """
         emails_path = self.data_dir / "emails_parsed.jsonl"
         emails = []
         
@@ -83,7 +121,21 @@ class EmailThreadReconstructor:
     
     @staticmethod
     def normalize_subject(subject: str) -> str:
-        """Normalize email subject for thread matching with caching"""
+        """Normalize email subject for thread matching with caching
+        
+        Removes common reply/forward prefixes and normalizes whitespace to
+        enable consistent subject-based thread grouping.
+        
+        Args:
+            subject (str): Raw email subject line
+            
+        Returns:
+            str: Normalized subject string suitable for comparison
+            
+        Example:
+            >>> normalize_subject("Re: Meeting Tomorrow")
+            'meeting tomorrow'
+        """
         if not subject:
             return ""
         
@@ -97,7 +149,17 @@ class EmailThreadReconstructor:
     
     @staticmethod
     def extract_email_references(email: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract threading references from email headers with validation"""
+        """Extract threading references from email headers with validation
+        
+        Processes standard email headers to extract message relationships needed
+        for thread reconstruction. Handles edge cases like malformed headers.
+        
+        Args:
+            email (Dict[str, Any]): Parsed email dictionary with headers
+            
+        Returns:
+            Dict[str, Any]: Extracted reference data including message IDs and subjects
+        """
         headers = email.get('headers', {})
         
         # Extract and clean message ID
@@ -120,7 +182,17 @@ class EmailThreadReconstructor:
     
     @staticmethod
     def _parse_references(references_header: str) -> List[str]:
-        """Parse References header into list of message IDs"""
+        """Parse References header into list of message IDs
+        
+        Extracts message IDs from the References header according to RFC standards.
+        Handles multiple IDs separated by whitespace and angle brackets.
+        
+        Args:
+            references_header (str): Raw References header content
+            
+        Returns:
+            List[str]: Cleaned list of referenced message IDs
+        """
         if not references_header:
             return []
         
@@ -129,7 +201,17 @@ class EmailThreadReconstructor:
         return [mid.strip() for mid in message_ids if mid.strip()]
     
     def build_thread_graph(self, emails: List[Dict[str, Any]]) -> nx.DiGraph:
-        """Build directed graph of email relationships with performance optimizations"""
+        """Build directed graph of email relationships with performance optimizations
+        
+        Constructs a directed graph where nodes represent emails and edges represent
+        reply relationships. Uses efficient batch operations to handle large datasets.
+        
+        Args:
+            emails (List[Dict[str, Any]]): List of parsed email dictionaries
+            
+        Returns:
+            nx.DiGraph: Directed graph representing email thread relationships
+        """
         graph = nx.DiGraph()
         
         # Pre-extract all references for better performance
@@ -173,13 +255,33 @@ class EmailThreadReconstructor:
         return graph
     
     def identify_thread_roots(self, graph: nx.DiGraph) -> List[str]:
-        """Identify root messages (no incoming edges) with optimization"""
+        """Identify root messages (no incoming edges) with optimization
+        
+        Finds emails that are not replies to any other email in the dataset,
+        which serve as starting points for thread reconstruction.
+        
+        Args:
+            graph (nx.DiGraph): Thread relationship graph
+            
+        Returns:
+            List[str]: List of root message IDs
+        """
         roots = [node for node in graph.nodes() if graph.in_degree(node) == 0]
         self.logger.info(f"Identified {len(roots)} thread roots")
         return roots
     
     def extract_conversation_threads(self, graph: nx.DiGraph) -> List[Dict[str, Any]]:
-        """Extract conversation threads from the graph with improved performance"""
+        """Extract conversation threads from the graph with improved performance
+        
+        Traverses the graph from root nodes to build complete conversation threads.
+        Calculates thread metadata including depth, participants, and subject variants.
+        
+        Args:
+            graph (nx.DiGraph): Thread relationship graph
+            
+        Returns:
+            List[Dict[str, Any]]: List of reconstructed conversation threads
+        """
         roots = self.identify_thread_roots(graph)
         threads = []
         
@@ -220,7 +322,18 @@ class EmailThreadReconstructor:
         return threads
     
     def validate_thread_quality(self, threads: List[Dict[str, Any]]) -> Dict[str, float]:
-        """Generate thread quality metrics with vectorized calculations"""
+        """Generate thread quality metrics with vectorized calculations
+        
+        Computes comprehensive metrics to evaluate the effectiveness of thread
+        reconstruction including depth distribution, participant diversity, and
+        message grouping efficiency.
+        
+        Args:
+            threads (List[Dict[str, Any]]): List of reconstructed threads
+            
+        Returns:
+            Dict[str, float]: Quality metrics dictionary
+        """
         if not threads:
             return {}
         
@@ -246,7 +359,18 @@ class EmailThreadReconstructor:
         return quality_metrics
     
     def save_thread_data(self, threads: List[Dict[str, Any]], quality_metrics: Dict[str, float]) -> None:
-        """Save thread reconstruction results with error handling"""
+        """Save thread reconstruction results with error handling
+        
+        Persists reconstructed threads and quality metrics to JSON files.
+        Uses UTF-8 encoding to support international characters in email content.
+        
+        Args:
+            threads (List[Dict[str, Any]]): List of reconstructed threads
+            quality_metrics (Dict[str, float]): Thread quality evaluation metrics
+            
+        Raises:
+            Exception: If file writing operations fail
+        """
         try:
             # Save threads with proper encoding
             threads_path = self.data_dir / "conversation_threads.jsonl"
@@ -278,7 +402,15 @@ class EmailThreadReconstructor:
             raise
     
     def run(self) -> None:
-        """Execute the complete thread reconstruction pipeline"""
+        """Execute the complete thread reconstruction pipeline
+        
+        Orchestrates the full thread reconstruction workflow from data loading
+        through graph construction, thread extraction, quality validation, and
+        result persistence.
+        
+        Raises:
+            Exception: If any pipeline stage fails
+        """
         try:
             self.logger.info("Starting thread reconstruction pipeline")
             
@@ -309,7 +441,11 @@ class EmailThreadReconstructor:
 
 
 def main():
-    """Main entry point for thread reconstruction pipeline"""
+    """Main entry point for thread reconstruction pipeline
+    
+    Initializes and executes the complete email thread reconstruction workflow.
+    Handles top-level exception logging for pipeline failures.
+    """
     base_dir = r"C:\Users\Ken Ira Talingting\Desktop\build-nlp-from-scratch\01_data-pipelines\01_email-thread-forensics"
     
     try:
