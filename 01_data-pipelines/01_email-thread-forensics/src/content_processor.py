@@ -13,8 +13,7 @@ Key Features:
 - Robust error handling and logging
 - Progress tracking for large datasets
 
-Author: Email Forensics Pipeline
-Version: 1.0
+Author: kira-ml (GitHub, machine learning student)
 """
 
 import pandas as pd
@@ -31,7 +30,14 @@ from pathlib import Path
 
 # Configure logging
 def setup_logging():
-    """Setup comprehensive logging for the content processing pipeline"""
+    """Setup comprehensive logging for the content processing pipeline
+    
+    Creates dual logging to file and console with timestamped filenames.
+    Ensures logs directory exists before configuring handlers.
+    
+    Returns:
+        Logger: Configured logger instance for content processing
+    """
     BASE_DIR = Path(__file__).parent.parent
     LOGS_DIR = BASE_DIR / "logs"
     LOGS_DIR.mkdir(exist_ok=True)
@@ -55,7 +61,20 @@ logger = setup_logging()
 
 # Configuration
 class ProcessorConfig:
-    """Configuration settings for content processor"""
+    """Configuration settings for content processor
+    
+    Centralized configuration management for processing parameters
+    and file paths to ensure consistency across pipeline components.
+    
+    Attributes:
+        BASE_DIR (Path): Project root directory
+        DATA_DIR (Path): Processed data directory path
+        INPUT_FILE (str): Source parsed emails filename
+        OUTPUT_PROCESSED (str): Processed emails output filename
+        OUTPUT_FINGERPRINTS (str): Content fingerprints output filename
+        BATCH_SIZE (int): Number of emails to process in each batch
+        MAX_ERRORS (int): Maximum allowed processing errors before termination
+    """
     def __init__(self):
         self.BASE_DIR = Path(__file__).parent.parent
         self.DATA_DIR = self.BASE_DIR / "data" / "processed"
@@ -68,7 +87,21 @@ class ProcessorConfig:
 config = ProcessorConfig()
 
 def load_parsed_emails() -> List[Dict]:
-    """Load parsed emails from JSONL file"""
+    """Load parsed emails from JSONL file
+    
+    Reads email data line-by-line to handle large datasets without memory issues.
+    Invalid JSON lines are logged and skipped to maintain processing continuity.
+    
+    Returns:
+        List[Dict]: List of parsed email dictionaries
+        
+    Raises:
+        FileNotFoundError: If input file doesn't exist at expected path
+        
+    Example:
+        >>> emails = load_parsed_emails()
+        >>> print(f"Loaded {len(emails)} emails")
+    """
     input_path = config.DATA_DIR / config.INPUT_FILE
     
     if not input_path.exists():
@@ -88,7 +121,17 @@ def load_parsed_emails() -> List[Dict]:
     return emails
 
 def extract_email_body(email_data: Dict) -> str:
-    """Extract and clean email body from parsed email data"""
+    """Extract and clean email body from parsed email data
+    
+    Prioritizes HTML content when available, falling back to plain text.
+    Applies appropriate cleaning based on content type.
+    
+    Args:
+        email_data (Dict): Parsed email dictionary containing body content
+        
+    Returns:
+        str: Cleaned email body text, empty string if extraction fails
+    """
     try:
         # Get body text from parsed email structure
         body_text = email_data.get('body_text', '')
@@ -108,7 +151,17 @@ def extract_email_body(email_data: Dict) -> str:
         return ""
 
 def extract_from_html(html_content: str) -> str:
-    """Convert HTML to clean plain text"""
+    """Convert HTML to clean plain text
+    
+    Preserves paragraph structure and line breaks while removing HTML tags.
+    Handles common HTML email formatting patterns for better readability.
+    
+    Args:
+        html_content (str): Raw HTML email content
+        
+    Returns:
+        str: Cleaned plain text representation of HTML content
+    """
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
         
@@ -129,7 +182,17 @@ def extract_from_html(html_content: str) -> str:
         return clean_plain_text(html_content)
 
 def clean_plain_text(text: str) -> str:
-    """Clean and normalize plain text content"""
+    """Clean and normalize plain text content
+    
+    Removes excessive whitespace while preserving intentional formatting.
+    Splits content into lines for granular cleaning operations.
+    
+    Args:
+        text (str): Raw plain text content
+        
+    Returns:
+        str: Cleaned and normalized text content
+    """
     if not isinstance(text, str):
         return ""
     
@@ -146,7 +209,17 @@ def clean_plain_text(text: str) -> str:
     return '\n'.join(cleaned_lines)
 
 def detect_quoted_content(text_body: str) -> Dict[str, str]:
-    """Detect and separate quoted content from original content"""
+    """Detect and separate quoted content from original content
+    
+    Identifies quoted text using common email reply patterns and separates
+    it from original message content for cleaner analysis.
+    
+    Args:
+        text_body (str): Full email body text to analyze
+        
+    Returns:
+        Dict[str, str]: Dictionary with 'original' and 'quoted' content sections
+    """
     if not isinstance(text_body, str) or not text_body.strip():
         return {'original': '', 'quoted': ''}
     
@@ -190,7 +263,17 @@ def detect_quoted_content(text_body: str) -> Dict[str, str]:
     }
 
 def normalize_headers(email_data: Dict) -> Dict[str, Optional[str]]:
-    """Normalize and standardize email headers"""
+    """Normalize and standardize email headers
+    
+    Processes standard email headers to create consistent, comparable values.
+    Handles address parsing, date standardization, and case normalization.
+    
+    Args:
+        email_data (Dict): Parsed email dictionary containing raw headers
+        
+    Returns:
+        Dict[str, Optional[str]]: Normalized header values with standardized formats
+    """
     try:
         headers = email_data.get('headers', {})
         
@@ -249,7 +332,17 @@ def normalize_headers(email_data: Dict) -> Dict[str, Optional[str]]:
         }
 
 def generate_content_hash(content_dict: Dict[str, str]) -> str:
-    """Generate SHA-256 hash for content deduplication"""
+    """Generate SHA-256 hash for content deduplication
+    
+    Creates deterministic hash based on key email content fields to
+    enable efficient duplicate detection and content fingerprinting.
+    
+    Args:
+        content_dict (Dict[str, str]): Dictionary of content fields to hash
+        
+    Returns:
+        str: SHA-256 hash hexadecimal string of content
+    """
     try:
         # Create deterministic string for hashing
         hash_components = [
@@ -269,7 +362,18 @@ def generate_content_hash(content_dict: Dict[str, str]) -> str:
         return hashlib.sha256(str(datetime.now()).encode()).hexdigest()
 
 def process_single_email(email_data: Dict) -> Tuple[Optional[Dict], Optional[Dict]]:
-    """Process a single email and return processed email and fingerprint"""
+    """Process a single email and return processed email and fingerprint
+    
+    Orchestrates the complete processing workflow for one email including
+    content extraction, cleaning, normalization, and fingerprinting.
+    
+    Args:
+        email_data (Dict): Raw parsed email data to process
+        
+    Returns:
+        Tuple[Optional[Dict], Optional[Dict]]: Tuple of (processed_email, fingerprint)
+            Returns (None, None) if processing fails
+    """
     try:
         email_id = email_data.get('id', 'unknown')
         
@@ -331,7 +435,14 @@ def process_single_email(email_data: Dict) -> Tuple[Optional[Dict], Optional[Dic
         return None, None
 
 def process_all_emails() -> Tuple[List[Dict], List[Dict], Dict]:
-    """Process all emails and return results with statistics"""
+    """Process all emails and return results with statistics
+    
+    Executes batch processing of all emails with memory-efficient streaming.
+    Tracks processing metrics and handles error thresholds gracefully.
+    
+    Returns:
+        Tuple[List[Dict], List[Dict], Dict]: Tuple of (processed_emails, fingerprints, stats)
+    """
     logger.info("Starting email content processing pipeline...")
     
     # Load parsed emails
@@ -378,7 +489,16 @@ def process_all_emails() -> Tuple[List[Dict], List[Dict], Dict]:
     return processed_emails, content_fingerprints, stats
 
 def save_results(processed_emails: List[Dict], fingerprints: List[Dict], stats: Dict):
-    """Save processing results to files"""
+    """Save processing results to files
+    
+    Persists processed emails, content fingerprints, and processing statistics
+    to JSONL and JSON files respectively with UTF-8 encoding support.
+    
+    Args:
+        processed_emails (List[Dict]): List of fully processed email records
+        fingerprints (List[Dict]): List of content fingerprint records
+        stats (Dict): Processing statistics dictionary
+    """
     # Ensure output directory exists
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     
@@ -403,7 +523,14 @@ def save_results(processed_emails: List[Dict], fingerprints: List[Dict], stats: 
     logger.info(f"Saved processing report to {report_path}")
 
 def validate_outputs():
-    """Validate that output files were created correctly"""
+    """Validate that output files were created correctly
+    
+    Performs basic validation checks on output files to ensure
+    successful completion and non-empty results.
+    
+    Returns:
+        bool: True if all validations pass, False otherwise
+    """
     output_files = [
         config.DATA_DIR / config.OUTPUT_PROCESSED,
         config.DATA_DIR / config.OUTPUT_FINGERPRINTS,
@@ -423,7 +550,11 @@ def validate_outputs():
     return True
 
 def main():
-    """Main execution function"""
+    """Main execution function
+    
+    Entry point for the complete email content processing pipeline.
+    Orchestrates all processing stages and handles top-level errors.
+    """
     try:
         logger.info("="*60)
         logger.info("EMAIL CONTENT PROCESSING PIPELINE STARTED")
