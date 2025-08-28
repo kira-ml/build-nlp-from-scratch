@@ -25,8 +25,10 @@ import hashlib
 import logging
 from datetime import datetime
 from bs4 import BeautifulSoup
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from pathlib import Path
+import uuid
+from dataclasses import dataclass, asdict
 
 # Configure logging
 def setup_logging():
@@ -58,6 +60,114 @@ def setup_logging():
 
 # Initialize logging
 logger = setup_logging()
+
+# Transformation Lineage Classes
+@dataclass
+class TransformationStep:
+    """Records a single transformation step with full lineage information"""
+    step_id: str
+    transformation_type: str
+    parameters: Dict[str, Any]
+    input_content: str
+    output_content: str
+    content_changes: Dict[str, Any]
+    timestamp: str
+    reversibility_metadata: Dict[str, Any]
+
+class TransformationLineageTracker:
+    """Tracks and manages transformation lineage for email content processing"""
+    
+    def __init__(self):
+        self.transformations: List[TransformationStep] = []
+        self.lineage_id = str(uuid.uuid4())
+        
+    def record_transformation(
+        self,
+        transformation_type: str,
+        input_content: str,
+        output_content: str,
+        parameters: Dict[str, Any] = None,
+        reversibility_metadata: Dict[str, Any] = None
+    ) -> str:
+        """Record a transformation step with before/after content snapshots
+        
+        Args:
+            transformation_type: Type of transformation applied
+            input_content: Content before transformation
+            output_content: Content after transformation
+            parameters: Parameters used in transformation
+            reversibility_metadata: Metadata needed to reverse the transformation
+            
+        Returns:
+            str: Unique step ID for the transformation
+        """
+        step_id = str(uuid.uuid4())
+        timestamp = datetime.now().isoformat()
+        
+        # Calculate content changes
+        content_changes = self._calculate_content_changes(input_content, output_content)
+        
+        # Default parameters and reversibility metadata
+        parameters = parameters or {}
+        reversibility_metadata = reversibility_metadata or {}
+        
+        transformation = TransformationStep(
+            step_id=step_id,
+            transformation_type=transformation_type,
+            parameters=parameters,
+            input_content=input_content,
+            output_content=output_content,
+            content_changes=content_changes,
+            timestamp=timestamp,
+            reversibility_metadata=reversibility_metadata
+        )
+        
+        self.transformations.append(transformation)
+        logger.debug(f"Recorded transformation: {transformation_type} (ID: {step_id})")
+        
+        return step_id
+    
+    def _calculate_content_changes(self, input_content: str, output_content: str) -> Dict[str, Any]:
+        """Calculate detailed changes between input and output content"""
+        return {
+            'input_length': len(input_content),
+            'output_length': len(output_content),
+            'length_change': len(output_content) - len(input_content),
+            'input_lines': len(input_content.splitlines()),
+            'output_lines': len(output_content.splitlines()),
+            'character_change_ratio': len(output_content) / len(input_content) if input_content else 0,
+            'content_modified': input_content != output_content
+        }
+    
+    def get_lineage_chain(self) -> List[Dict[str, Any]]:
+        """Get complete transformation lineage chain"""
+        return [asdict(step) for step in self.transformations]
+    
+    def get_original_content(self) -> str:
+        """Get the original content before any transformations"""
+        if self.transformations:
+            return self.transformations[0].input_content
+        return ""
+    
+    def get_final_content(self) -> str:
+        """Get the final content after all transformations"""
+        if self.transformations:
+            return self.transformations[-1].output_content
+        return ""
+    
+    def reconstruct_from_step(self, step_id: str) -> Optional[str]:
+        """Reconstruct content from a specific transformation step
+        
+        Args:
+            step_id: ID of the transformation step to reconstruct from
+            
+        Returns:
+            Content at the specified transformation step, or None if not found
+        """
+        for step in self.transformations:
+            if step.step_id == step_id:
+                return step.input_content
+        return None
 
 # Configuration
 class ProcessorConfig:
@@ -120,14 +230,15 @@ def load_parsed_emails() -> List[Dict]:
     logger.info(f"Loaded {len(emails)} parsed emails from {input_path}")
     return emails
 
-def extract_email_body(email_data: Dict) -> str:
-    """Extract and clean email body from parsed email data
+def extract_email_body(email_data: Dict, lineage_tracker: TransformationLineageTracker) -> str:
+    """Extract and clean email body from parsed email data with lineage tracking
     
     Prioritizes HTML content when available, falling back to plain text.
-    Applies appropriate cleaning based on content type.
+    Applies appropriate cleaning based on content type while recording all transformations.
     
     Args:
         email_data (Dict): Parsed email dictionary containing body content
+        lineage_tracker (TransformationLineageTracker): Tracker for recording transformations
         
     Returns:
         str: Cleaned email body text, empty string if extraction fails
@@ -137,96 +248,245 @@ def extract_email_body(email_data: Dict) -> str:
         body_text = email_data.get('body_text', '')
         body_html = email_data.get('body_html', '')
         
-        # Prefer HTML if available, fallback to plain text
+        # Record initial content selection
         if body_html and body_html.strip():
-            return extract_from_html(body_html)
+            original_content = body_html
+            lineage_tracker.record_transformation(
+                transformation_type="content_selection",
+                input_content=f"HTML: {body_html}\nTEXT: {body_text}",
+                output_content=body_html,
+                parameters={"selection_criteria": "html_preferred", "has_html": True, "has_text": bool(body_text)},
+                reversibility_metadata={"alternative_text": body_text, "selection_reason": "html_available"}
+            )
+            return extract_from_html(body_html, lineage_tracker)
         elif body_text and body_text.strip():
-            return clean_plain_text(body_text)
+            original_content = body_text
+            lineage_tracker.record_transformation(
+                transformation_type="content_selection",
+                input_content=f"HTML: {body_html}\nTEXT: {body_text}",
+                output_content=body_text,
+                parameters={"selection_criteria": "text_fallback", "has_html": bool(body_html), "has_text": True},
+                reversibility_metadata={"alternative_html": body_html, "selection_reason": "html_unavailable"}
+            )
+            return clean_plain_text(body_text, lineage_tracker)
         else:
+            # Record empty content case
+            lineage_tracker.record_transformation(
+                transformation_type="content_selection",
+                input_content=f"HTML: {body_html}\nTEXT: {body_text}",
+                output_content="",
+                parameters={"selection_criteria": "no_content", "has_html": False, "has_text": False},
+                reversibility_metadata={"original_html": body_html, "original_text": body_text}
+            )
             logger.warning(f"No body content found for email {email_data.get('id', 'unknown')}")
             return ""
             
     except Exception as e:
         logger.error(f"Error extracting body for email {email_data.get('id', 'unknown')}: {e}")
+        # Record error transformation
+        lineage_tracker.record_transformation(
+            transformation_type="extraction_error",
+            input_content=str(email_data),
+            output_content="",
+            parameters={"error": str(e)},
+            reversibility_metadata={"original_data": email_data}
+        )
         return ""
 
-def extract_from_html(html_content: str) -> str:
-    """Convert HTML to clean plain text
+def extract_from_html(html_content: str, lineage_tracker: TransformationLineageTracker) -> str:
+    """Convert HTML to clean plain text with lineage tracking
     
     Preserves paragraph structure and line breaks while removing HTML tags.
     Handles common HTML email formatting patterns for better readability.
+    Records all transformation steps for reversibility.
     
     Args:
         html_content (str): Raw HTML email content
+        lineage_tracker (TransformationLineageTracker): Tracker for recording transformations
         
     Returns:
         str: Cleaned plain text representation of HTML content
     """
     try:
+        # Record HTML parsing step
         soup = BeautifulSoup(html_content, 'html.parser')
+        intermediate_content = str(soup)
         
-        # Replace <br> tags with newlines
+        lineage_tracker.record_transformation(
+            transformation_type="html_parsing",
+            input_content=html_content,
+            output_content=intermediate_content,
+            parameters={"parser": "html.parser", "soup_features": list(soup.find_all())[:10]},
+            reversibility_metadata={"original_html": html_content, "parser_used": "html.parser"}
+        )
+        
+        # Record <br> tag replacement
+        br_tags_found = len(soup.find_all('br'))
         for br in soup.find_all('br'):
             br.replace_with('\n')
         
-        # Replace <p> tags with double newlines for paragraph separation
+        content_after_br = str(soup)
+        lineage_tracker.record_transformation(
+            transformation_type="br_tag_replacement",
+            input_content=intermediate_content,
+            output_content=content_after_br,
+            parameters={"br_tags_replaced": br_tags_found},
+            reversibility_metadata={"br_positions": [str(br) for br in soup.find_all('br')][:10]}
+        )
+        
+        # Record <p> tag replacement
+        p_tags_found = len(soup.find_all('p'))
         for p in soup.find_all('p'):
             p.insert_after('\n\n')
         
-        # Get text and clean up extra whitespace
+        content_after_p = str(soup)
+        lineage_tracker.record_transformation(
+            transformation_type="p_tag_replacement",
+            input_content=content_after_br,
+            output_content=content_after_p,
+            parameters={"p_tags_processed": p_tags_found},
+            reversibility_metadata={"p_content": [p.get_text()[:100] for p in soup.find_all('p')][:10]}
+        )
+        
+        # Record text extraction
         text = soup.get_text()
-        return clean_plain_text(text)
+        lineage_tracker.record_transformation(
+            transformation_type="html_text_extraction",
+            input_content=content_after_p,
+            output_content=text,
+            parameters={"extraction_method": "beautifulsoup.get_text"},
+            reversibility_metadata={"html_structure_preserved": False}
+        )
+        
+        # Clean up extracted text
+        return clean_plain_text(text, lineage_tracker)
         
     except Exception as e:
         logger.warning(f"HTML parsing failed, using raw content: {e}")
-        return clean_plain_text(html_content)
+        # Record fallback to raw content
+        lineage_tracker.record_transformation(
+            transformation_type="html_parsing_fallback",
+            input_content=html_content,
+            output_content=html_content,
+            parameters={"error": str(e), "fallback_method": "raw_content"},
+            reversibility_metadata={"original_html": html_content, "parsing_error": str(e)}
+        )
+        return clean_plain_text(html_content, lineage_tracker)
 
-def clean_plain_text(text: str) -> str:
-    """Clean and normalize plain text content
+def clean_plain_text(text: str, lineage_tracker: TransformationLineageTracker) -> str:
+    """Clean and normalize plain text content with lineage tracking
     
     Removes excessive whitespace while preserving intentional formatting.
     Splits content into lines for granular cleaning operations.
+    Records all transformations for full reversibility.
     
     Args:
         text (str): Raw plain text content
+        lineage_tracker (TransformationLineageTracker): Tracker for recording transformations
         
     Returns:
         str: Cleaned and normalized text content
     """
     if not isinstance(text, str):
+        lineage_tracker.record_transformation(
+            transformation_type="type_validation",
+            input_content=str(text),
+            output_content="",
+            parameters={"input_type": type(text).__name__, "expected_type": "str"},
+            reversibility_metadata={"original_value": text, "original_type": type(text).__name__}
+        )
         return ""
     
-    # Split into lines and clean each line
-    lines = text.splitlines()
-    cleaned_lines = []
+    original_text = text
     
-    for line in lines:
+    # Record line splitting
+    lines = text.splitlines()
+    lineage_tracker.record_transformation(
+        transformation_type="line_splitting",
+        input_content=text,
+        output_content='\n'.join(lines),
+        parameters={"line_count": len(lines), "split_method": "splitlines"},
+        reversibility_metadata={"original_line_endings": "preserved"}
+    )
+    
+    # Record line cleaning process
+    cleaned_lines = []
+    line_changes = []
+    
+    for i, line in enumerate(lines):
+        original_line = line
         # Remove excessive whitespace but preserve intentional formatting
         cleaned_line = re.sub(r'\s+', ' ', line.strip())
+        
         if cleaned_line:  # Skip empty lines
             cleaned_lines.append(cleaned_line)
+            if original_line != cleaned_line:
+                line_changes.append({
+                    'line_number': i,
+                    'original': original_line,
+                    'cleaned': cleaned_line,
+                    'changes': 'whitespace_normalized'
+                })
+        else:
+            line_changes.append({
+                'line_number': i,
+                'original': original_line,
+                'cleaned': '',
+                'changes': 'empty_line_removed'
+            })
     
-    return '\n'.join(cleaned_lines)
+    final_text = '\n'.join(cleaned_lines)
+    
+    # Record final cleaning transformation
+    lineage_tracker.record_transformation(
+        transformation_type="text_cleaning",
+        input_content=original_text,
+        output_content=final_text,
+        parameters={
+            "original_lines": len(lines),
+            "cleaned_lines": len(cleaned_lines),
+            "empty_lines_removed": len(lines) - len(cleaned_lines),
+            "whitespace_pattern": r'\s+',
+            "replacement_pattern": ' '
+        },
+        reversibility_metadata={
+            "line_changes": line_changes[:50],  # Limit to first 50 changes for performance
+            "original_length": len(original_text),
+            "cleaning_rules": ["strip_lines", "normalize_whitespace", "remove_empty_lines"]
+        }
+    )
+    
+    return final_text
 
-def detect_quoted_content(text_body: str) -> Dict[str, str]:
-    """Detect and separate quoted content from original content
+def detect_quoted_content(text_body: str, lineage_tracker: TransformationLineageTracker) -> Dict[str, str]:
+    """Detect and separate quoted content from original content with lineage tracking
     
     Identifies quoted text using common email reply patterns and separates
     it from original message content for cleaner analysis.
+    Records all pattern matching and content separation decisions.
     
     Args:
         text_body (str): Full email body text to analyze
+        lineage_tracker (TransformationLineageTracker): Tracker for recording transformations
         
     Returns:
         Dict[str, str]: Dictionary with 'original' and 'quoted' content sections
     """
     if not isinstance(text_body, str) or not text_body.strip():
+        lineage_tracker.record_transformation(
+            transformation_type="quote_detection_validation",
+            input_content=str(text_body),
+            output_content="{'original': '', 'quoted': ''}",
+            parameters={"validation_result": "empty_or_invalid_input"},
+            reversibility_metadata={"original_input": text_body, "input_type": type(text_body).__name__}
+        )
         return {'original': '', 'quoted': ''}
     
     quote_lines = []
     original_lines = []
     lines = text_body.splitlines()
     in_quote = False
+    quote_triggers = []
     
     # Patterns that indicate start of quoted content
     quote_patterns = [
@@ -240,12 +500,22 @@ def detect_quoted_content(text_body: str) -> Dict[str, str]:
         r'________________________________',  # Outlook separator
     ]
     
-    for line in lines:
+    # Record pattern matching process
+    for i, line in enumerate(lines):
+        line_quote_matches = []
+        
         # Check if this line indicates start of quoted content
         if not in_quote:
             for pattern in quote_patterns:
                 if re.search(pattern, line, re.IGNORECASE):
                     in_quote = True
+                    line_quote_matches.append(pattern)
+                    quote_triggers.append({
+                        'line_number': i,
+                        'line_content': line,
+                        'matching_pattern': pattern,
+                        'quote_started': True
+                    })
                     break
         
         # Categorize the line
@@ -256,6 +526,29 @@ def detect_quoted_content(text_body: str) -> Dict[str, str]:
     
     original_text = '\n'.join(original_lines).strip()
     quoted_text = '\n'.join(quote_lines).strip()
+    
+    # Record quote detection transformation
+    lineage_tracker.record_transformation(
+        transformation_type="quote_content_detection",
+        input_content=text_body,
+        output_content=f"ORIGINAL:\n{original_text}\n\nQUOTED:\n{quoted_text}",
+        parameters={
+            "total_lines": len(lines),
+            "original_lines": len(original_lines),
+            "quoted_lines": len(quote_lines),
+            "quote_patterns_used": quote_patterns,
+            "quote_triggers_found": len(quote_triggers)
+        },
+        reversibility_metadata={
+            "line_categorization": [
+                {"line_number": i, "content": line[:100], "category": "quoted" if i >= len(original_lines) else "original"}
+                for i, line in enumerate(lines[:50])  # Limit for performance
+            ],
+            "quote_triggers": quote_triggers,
+            "patterns_matched": [trigger['matching_pattern'] for trigger in quote_triggers],
+            "reconstruction_method": "line_by_line_categorization"
+        }
+    )
     
     return {
         'original': original_text,
@@ -362,10 +655,11 @@ def generate_content_hash(content_dict: Dict[str, str]) -> str:
         return hashlib.sha256(str(datetime.now()).encode()).hexdigest()
 
 def process_single_email(email_data: Dict) -> Tuple[Optional[Dict], Optional[Dict]]:
-    """Process a single email and return processed email and fingerprint
+    """Process a single email and return processed email and fingerprint with lineage tracking
     
     Orchestrates the complete processing workflow for one email including
     content extraction, cleaning, normalization, and fingerprinting.
+    Records complete transformation lineage for forensic analysis.
     
     Args:
         email_data (Dict): Raw parsed email data to process
@@ -377,17 +671,38 @@ def process_single_email(email_data: Dict) -> Tuple[Optional[Dict], Optional[Dic
     try:
         email_id = email_data.get('id', 'unknown')
         
+        # Initialize lineage tracker for this email
+        lineage_tracker = TransformationLineageTracker()
+        
+        # Record initial email data state
+        lineage_tracker.record_transformation(
+            transformation_type="email_processing_start",
+            input_content=json.dumps(email_data, default=str),
+            output_content=json.dumps(email_data, default=str),
+            parameters={"email_id": email_id, "processing_stage": "initialization"},
+            reversibility_metadata={"original_email_data": email_data}
+        )
+        
         # Extract and clean body content
-        plain_text = extract_email_body(email_data)
+        plain_text = extract_email_body(email_data, lineage_tracker)
         if not plain_text:
             logger.warning(f"No extractable content for email {email_id}")
             return None, None
         
         # Detect quoted content
-        content_parts = detect_quoted_content(plain_text)
+        content_parts = detect_quoted_content(plain_text, lineage_tracker)
         
         # Normalize headers
         norm_headers = normalize_headers(email_data)
+        
+        # Record header normalization
+        lineage_tracker.record_transformation(
+            transformation_type="header_normalization",
+            input_content=json.dumps(email_data.get('headers', {}), default=str),
+            output_content=json.dumps(norm_headers, default=str),
+            parameters={"normalization_fields": list(norm_headers.keys())},
+            reversibility_metadata={"original_headers": email_data.get('headers', {})}
+        )
         
         # Generate content hash
         hash_input = {
@@ -399,7 +714,19 @@ def process_single_email(email_data: Dict) -> Tuple[Optional[Dict], Optional[Dic
         }
         content_hash = generate_content_hash(hash_input)
         
-        # Create processed email record
+        # Record hash generation
+        lineage_tracker.record_transformation(
+            transformation_type="content_hash_generation",
+            input_content=json.dumps(hash_input, default=str),
+            output_content=content_hash,
+            parameters={"hash_algorithm": "sha256", "hash_fields": list(hash_input.keys())},
+            reversibility_metadata={"hash_input_data": hash_input}
+        )
+        
+        # Get complete lineage chain
+        transformation_lineage = lineage_tracker.get_lineage_chain()
+        
+        # Create processed email record with lineage
         processed_email = {
             'id': email_id,
             'message_id': norm_headers['message_id'],
@@ -411,13 +738,22 @@ def process_single_email(email_data: Dict) -> Tuple[Optional[Dict], Optional[Dic
             'body_quoted': content_parts['quoted'],
             'content_hash': content_hash,
             'source_filename': email_data.get('source_filename', ''),
+            'transformation_lineage': {
+                'lineage_id': lineage_tracker.lineage_id,
+                'transformation_count': len(transformation_lineage),
+                'transformation_chain': transformation_lineage,
+                'original_content': lineage_tracker.get_original_content(),
+                'final_content': lineage_tracker.get_final_content()
+            },
             'processing_metadata': {
                 'html_stripped': bool(email_data.get('body_html')),
                 'quotes_detected': bool(content_parts['quoted']),
                 'timestamp_parsed': bool(norm_headers['date']),
                 'processed_at': datetime.now().isoformat(),
-                'original_length': len(plain_text),
-                'processed_length': len(content_parts['original'])
+                'original_length': len(lineage_tracker.get_original_content()),
+                'processed_length': len(content_parts['original']),
+                'lineage_tracking_enabled': True,
+                'transformation_steps': len(transformation_lineage)
             }
         }
         
@@ -425,8 +761,18 @@ def process_single_email(email_data: Dict) -> Tuple[Optional[Dict], Optional[Dic
         fingerprint = {
             'id': email_id,
             'content_hash': content_hash,
-            'message_id': norm_headers['message_id']
+            'message_id': norm_headers['message_id'],
+            'lineage_id': lineage_tracker.lineage_id
         }
+        
+        # Record processing completion
+        lineage_tracker.record_transformation(
+            transformation_type="email_processing_complete",
+            input_content=json.dumps(email_data, default=str),
+            output_content=json.dumps(processed_email, default=str),
+            parameters={"processing_status": "success", "final_email_id": email_id},
+            reversibility_metadata={"complete_processing_chain": True}
+        )
         
         return processed_email, fingerprint
         
@@ -489,25 +835,26 @@ def process_all_emails() -> Tuple[List[Dict], List[Dict], Dict]:
     return processed_emails, content_fingerprints, stats
 
 def save_results(processed_emails: List[Dict], fingerprints: List[Dict], stats: Dict):
-    """Save processing results to files
+    """Save processing results to files with lineage data
     
     Persists processed emails, content fingerprints, and processing statistics
     to JSONL and JSON files respectively with UTF-8 encoding support.
+    Includes transformation lineage data for forensic analysis.
     
     Args:
-        processed_emails (List[Dict]): List of fully processed email records
+        processed_emails (List[Dict]): List of fully processed email records with lineage
         fingerprints (List[Dict]): List of content fingerprint records
         stats (Dict): Processing statistics dictionary
     """
     # Ensure output directory exists
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Save processed emails
+    # Save processed emails with lineage
     output_processed = config.DATA_DIR / config.OUTPUT_PROCESSED
     with open(output_processed, 'w', encoding='utf-8') as f:
         for email in processed_emails:
-            f.write(json.dumps(email, ensure_ascii=False) + '\n')
-    logger.info(f"Saved {len(processed_emails)} processed emails to {output_processed}")
+            f.write(json.dumps(email, ensure_ascii=False, default=str) + '\n')
+    logger.info(f"Saved {len(processed_emails)} processed emails with lineage to {output_processed}")
     
     # Save content fingerprints
     output_fingerprints = config.DATA_DIR / config.OUTPUT_FINGERPRINTS
@@ -516,17 +863,59 @@ def save_results(processed_emails: List[Dict], fingerprints: List[Dict], stats: 
             f.write(json.dumps(fingerprint, ensure_ascii=False) + '\n')
     logger.info(f"Saved {len(fingerprints)} content fingerprints to {output_fingerprints}")
     
-    # Save processing report
+    # Save separate lineage summary for quick access
+    lineage_summary_path = config.DATA_DIR / "transformation_lineage_summary.jsonl"
+    with open(lineage_summary_path, 'w', encoding='utf-8') as f:
+        for email in processed_emails:
+            if 'transformation_lineage' in email:
+                lineage_summary = {
+                    'email_id': email['id'],
+                    'lineage_id': email['transformation_lineage']['lineage_id'],
+                    'transformation_count': email['transformation_lineage']['transformation_count'],
+                    'transformations': [
+                        {
+                            'step_id': step['step_id'],
+                            'type': step['transformation_type'],
+                            'timestamp': step['timestamp']
+                        }
+                        for step in email['transformation_lineage']['transformation_chain']
+                    ]
+                }
+                f.write(json.dumps(lineage_summary, ensure_ascii=False) + '\n')
+    logger.info(f"Saved transformation lineage summary to {lineage_summary_path}")
+    
+    # Enhance stats with lineage information
+    lineage_stats = {
+        'emails_with_lineage': sum(1 for email in processed_emails if 'transformation_lineage' in email),
+        'total_transformations': sum(
+            email.get('transformation_lineage', {}).get('transformation_count', 0)
+            for email in processed_emails
+        ),
+        'avg_transformations_per_email': 0
+    }
+    
+    if processed_emails:
+        lineage_stats['avg_transformations_per_email'] = (
+            lineage_stats['total_transformations'] / len(processed_emails)
+        )
+    
+    stats.update({
+        'lineage_tracking': lineage_stats,
+        'lineage_enabled': True
+    })
+    
+    # Save enhanced processing report
     report_path = config.DATA_DIR / "content_processing_report.json"
     with open(report_path, 'w', encoding='utf-8') as f:
-        json.dump(stats, f, indent=2, ensure_ascii=False)
-    logger.info(f"Saved processing report to {report_path}")
+        json.dump(stats, f, indent=2, ensure_ascii=False, default=str)
+    logger.info(f"Saved enhanced processing report with lineage stats to {report_path}")
 
 def validate_outputs():
-    """Validate that output files were created correctly
+    """Validate that output files were created correctly including lineage data
     
     Performs basic validation checks on output files to ensure
-    successful completion and non-empty results.
+    successful completion and non-empty results. Includes validation
+    of transformation lineage files.
     
     Returns:
         bool: True if all validations pass, False otherwise
@@ -534,7 +923,8 @@ def validate_outputs():
     output_files = [
         config.DATA_DIR / config.OUTPUT_PROCESSED,
         config.DATA_DIR / config.OUTPUT_FINGERPRINTS,
-        config.DATA_DIR / "content_processing_report.json"
+        config.DATA_DIR / "content_processing_report.json",
+        config.DATA_DIR / "transformation_lineage_summary.jsonl"
     ]
     
     for file_path in output_files:
@@ -546,7 +936,24 @@ def validate_outputs():
             logger.error(f"Output file is empty: {file_path}")
             return False
     
-    logger.info("All output files validated successfully")
+    # Additional validation for lineage data structure
+    try:
+        with open(config.DATA_DIR / config.OUTPUT_PROCESSED, 'r', encoding='utf-8') as f:
+            first_line = f.readline().strip()
+            if first_line:
+                email_data = json.loads(first_line)
+                if 'transformation_lineage' not in email_data:
+                    logger.warning("Processed emails missing transformation lineage data")
+                    return False
+                
+                if 'lineage_id' not in email_data['transformation_lineage']:
+                    logger.error("Invalid lineage structure - missing lineage_id")
+                    return False
+    except Exception as e:
+        logger.error(f"Failed to validate lineage structure: {e}")
+        return False
+    
+    logger.info("All output files and lineage data validated successfully")
     return True
 
 def main():
@@ -568,13 +975,18 @@ def main():
         
         # Validate outputs
         if validate_outputs():
-            logger.info("Content processing pipeline completed successfully!")
-            print(f"\n✅ PROCESSING COMPLETE!")
+            logger.info("Content processing pipeline with lineage tracking completed successfully!")
+            print(f"\n✅ PROCESSING COMPLETE WITH LINEAGE TRACKING!")
             print(f"📊 Processed: {stats['successfully_processed']}/{stats['total_input']} emails")
             print(f"📈 Success Rate: {stats['success_rate']:.1%}")
             print(f"💬 Quotes Detected: {stats['quotes_detected']} emails")
             print(f"🌐 HTML Emails: {stats['html_emails']} emails")
-            print(f"📁 Output Files: {config.DATA_DIR}")
+            if 'lineage_tracking' in stats:
+                print(f"� Lineage Tracked: {stats['lineage_tracking']['emails_with_lineage']} emails")
+                print(f"⚡ Total Transformations: {stats['lineage_tracking']['total_transformations']}")
+                print(f"📝 Avg Transformations/Email: {stats['lineage_tracking']['avg_transformations_per_email']:.1f}")
+            print(f"�📁 Output Files: {config.DATA_DIR}")
+            print(f"📋 Lineage Summary: transformation_lineage_summary.jsonl")
         else:
             raise Exception("Output validation failed")
             

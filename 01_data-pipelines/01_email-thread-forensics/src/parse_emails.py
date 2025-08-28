@@ -6,6 +6,8 @@ from email.policy import default
 import json
 from datetime import datetime
 import time
+import hashlib
+from collections import defaultdict
 
 
 def setup_directories_and_logging():
@@ -69,12 +71,25 @@ def load_email_data(data_dir):
         raise
 
 
-def parse_raw_email(raw_text, email_id):
+def calculate_content_hash(content):
+    """Calculate SHA256 hash of content for integrity validation"""
+    if isinstance(content, str):
+        content = content.encode('utf-8')
+    return hashlib.sha256(content).hexdigest()
+
+
+def parse_raw_email(raw_text, email_id, filename):
     """
     Parse raw email string into structured components.
     Returns a dict with headers and body.
     """
     try:
+        # Calculate content hash for integrity validation
+        content_hash = calculate_content_hash(raw_text)
+        
+        # Record parsing timestamp
+        parsing_timestamp = datetime.utcnow().isoformat() + 'Z'
+        
         msg = email.message_from_string(raw_text, policy=default)
         
         # Extract all headers
@@ -134,6 +149,21 @@ def parse_raw_email(raw_text, email_id):
                 elif msg.get_content_type() == "text/html":
                     body_html = content
         
+        # Create lineage metadata
+        lineage_metadata = {
+            "original_file_path": filename,
+            "byte_offsets": {"start": 0, "end": len(raw_text.encode('utf-8'))},
+            "parsing_timestamp": parsing_timestamp,
+            "transformation_history": [
+                {
+                    "step": "initial_parsing",
+                    "timestamp": parsing_timestamp,
+                    "description": "Parsed raw email content into structured components"
+                }
+            ],
+            "content_hash": content_hash
+        }
+        
         return {
             "id": email_id,
             "headers": structured_headers,
@@ -141,7 +171,8 @@ def parse_raw_email(raw_text, email_id):
             "body_text": body_text.strip(),
             "body_html": body_html.strip(),
             "parsing_success": True,
-            "error": None
+            "error": None,
+            "lineage_metadata": lineage_metadata
         }
     
     except Exception as e:
@@ -153,13 +184,21 @@ def parse_raw_email(raw_text, email_id):
             "body_text": "",
             "body_html": "",
             "parsing_success": False,
-            "error": str(e)
+            "error": str(e),
+            "lineage_metadata": {
+                "original_file_path": filename,
+                "byte_offsets": {"start": 0, "end": 0},
+                "parsing_timestamp": datetime.utcnow().isoformat() + 'Z',
+                "transformation_history": [],
+                "content_hash": ""
+            }
         }
 
 
 def process_all_emails(df):
     """Process all emails and return parsed results"""
     parsed_emails = []
+    token_lineage_map = defaultdict(list)  # Maps tokens to their source locations
     total = len(df)
     failed_count = 0
     
@@ -167,10 +206,27 @@ def process_all_emails(df):
     start_time = time.time()
     
     for idx, row in df.iterrows():
-        result = parse_raw_email(row["raw_text"], row["id"])
+        result = parse_raw_email(row["raw_text"], row["id"], row["filename"])
         
         # Add source filename for traceability
         result["source_filename"] = row["filename"]
+        
+        # Update token lineage map with tokens from body text
+        if result["parsing_success"] and result["body_text"]:
+            # Simple tokenization for demonstration (in practice, use proper tokenizer)
+            tokens = result["body_text"].split()
+            file_path = result["lineage_metadata"]["original_file_path"]
+            email_id = result["id"]
+            
+            for i, token in enumerate(tokens):
+                # Record token position and source
+                token_info = {
+                    "email_id": email_id,
+                    "file_path": file_path,
+                    "position": i,
+                    "token": token
+                }
+                token_lineage_map[token].append(token_info)
         
         parsed_emails.append(result)
         
@@ -187,7 +243,7 @@ def process_all_emails(df):
     logging.info(f"Parsing complete. {total - failed_count} successful, {failed_count} failed.")
     logging.info(f"Total processing time: {processing_time:.2f} seconds")
     
-    return parsed_emails, processing_time
+    return parsed_emails, token_lineage_map, processing_time
 
 
 def save_parsed_emails(parsed_emails, data_dir):
@@ -204,7 +260,52 @@ def save_parsed_emails(parsed_emails, data_dir):
         raise
 
 
-def generate_parsing_report(parsed_emails, processing_time, input_csv, data_dir, timestamp):
+def save_token_lineage_map(token_lineage_map, data_dir):
+    """Save token lineage map to JSON file"""
+    token_map_path = os.path.join(data_dir, "token_lineage_map.json")
+    
+    try:
+        # Convert defaultdict to regular dict for JSON serialization
+        token_map_serializable = {k: v for k, v in token_lineage_map.items()}
+        with open(token_map_path, 'w', encoding='utf-8') as f:
+            json.dump(token_map_serializable, f, ensure_ascii=False, indent=2)
+        logging.info(f"Token lineage map saved to {token_map_path}")
+    except Exception as e:
+        logging.error(f"Failed to write token lineage map: {e}")
+        raise
+
+
+def validate_content_integrity(parsed_emails):
+    """Validate content integrity through pipeline stages"""
+    integrity_issues = []
+    
+    for email_data in parsed_emails:
+        if not email_data["parsing_success"]:
+            continue
+            
+        # Recalculate hash and compare with stored hash
+        current_hash = calculate_content_hash(email_data["body_text"])
+        stored_hash = email_data["lineage_metadata"].get("content_hash", "")
+        
+        if current_hash != stored_hash and stored_hash:
+            issue = {
+                "email_id": email_data["id"],
+                "issue_type": "content_hash_mismatch",
+                "stored_hash": stored_hash,
+                "current_hash": current_hash
+            }
+            integrity_issues.append(issue)
+            logging.warning(f"Content integrity issue detected for email {email_data['id']}")
+    
+    if integrity_issues:
+        logging.warning(f"Found {len(integrity_issues)} content integrity issues")
+    else:
+        logging.info("Content integrity validation passed for all emails")
+    
+    return integrity_issues
+
+
+def generate_parsing_report(parsed_emails, processing_time, input_csv, data_dir, timestamp, integrity_issues):
     """Generate parsing quality report"""
     from collections import Counter
     
@@ -224,7 +325,8 @@ def generate_parsing_report(parsed_emails, processing_time, input_csv, data_dir,
         "error_distribution": dict(error_counter),
         "source_file": input_csv,
         "processing_time_seconds": round(processing_time, 2),
-        "processing_timestamp": timestamp
+        "processing_timestamp": timestamp,
+        "integrity_issues_count": len(integrity_issues)
     }
     
     # Save report
@@ -272,14 +374,18 @@ def main():
         df = load_email_data(data_dir)
         
         # Process emails
-        parsed_emails, processing_time = process_all_emails(df)
+        parsed_emails, token_lineage_map, processing_time = process_all_emails(df)
+        
+        # Validate content integrity
+        integrity_issues = validate_content_integrity(parsed_emails)
         
         # Save results
         save_parsed_emails(parsed_emails, data_dir)
+        save_token_lineage_map(token_lineage_map, data_dir)
         
         # Generate report
         input_csv = os.path.join(data_dir, "emails_sampled_5k.csv")
-        generate_parsing_report(parsed_emails, processing_time, input_csv, data_dir, timestamp)
+        generate_parsing_report(parsed_emails, processing_time, input_csv, data_dir, timestamp, integrity_issues)
         
         # Extract thread hints
         extract_thread_hints(parsed_emails, data_dir)
