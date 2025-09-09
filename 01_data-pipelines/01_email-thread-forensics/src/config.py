@@ -23,7 +23,7 @@ THREAD_STORE_PATH = os.path.join(PROCESSED_DATA_DIR, "canonical_email_threads.cs
 
 
 
-BODY_COLUMN = 'body'
+BODY_COLUMN = 'message'  # Updated to match actual CSV column name
 
 
 
